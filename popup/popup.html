@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lenni</title>
+  <link rel="stylesheet" href="../styles/common.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="popup">
+    <div class="header">
+      <div class="logo">L</div>
+      <div>
+        <div class="title">Lenni</div>
+        <div class="subtitle">AI Execution Agent</div>
+      </div>
+      <span id="status" class="status disconnected">Offline</span>
+    </div>
+
+    <div class="actions">
+      <button id="btn-summarise" class="action-btn">
+        <span class="action-icon">📄</span>
+        <span>Summarise this page</span>
+      </button>
+      <button id="btn-facts" class="action-btn">
+        <span class="action-icon">🔍</span>
+        <span>Find key facts</span>
+      </button>
+      <button id="btn-chat" class="action-btn primary">
+        <span class="action-icon">💬</span>
+        <span>Ask Lenni...</span>
+      </button>
+    </div>
+
+    <div class="footer">
+      <a id="btn-options" href="#">Settings</a>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

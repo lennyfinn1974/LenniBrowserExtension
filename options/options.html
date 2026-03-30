@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lenni Extension Settings</title>
+  <link rel="stylesheet" href="../styles/common.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div id="options">
+    <div class="header">
+      <div class="logo">L</div>
+      <div>
+        <h1>Lenni Extension Settings</h1>
+        <p class="subtitle">Configure your connection to the Lenni backend</p>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Connection</h2>
+      <label>
+        <span>Lenni Backend URL</span>
+        <input type="url" id="lenni-url" placeholder="http://localhost:8200">
+      </label>
+      <label>
+        <span>Auth Token</span>
+        <input type="password" id="auth-token" placeholder="From Lenni login">
+      </label>
+      <div class="row">
+        <button id="btn-test" class="btn">Test Connection</button>
+        <span id="test-result"></span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Behaviour</h2>
+      <label class="toggle-label">
+        <span>Auto-open sidebar on new tab</span>
+        <input type="checkbox" id="auto-open">
+      </label>
+      <label class="toggle-label">
+        <span>Show notifications</span>
+        <input type="checkbox" id="show-notifications" checked>
+      </label>
+    </div>
+
+    <div class="section">
+      <h2>Context Menu</h2>
+      <label class="toggle-label">
+        <span>Ask Lenni about this</span>
+        <input type="checkbox" id="ctx-ask" checked>
+      </label>
+      <label class="toggle-label">
+        <span>Explain this</span>
+        <input type="checkbox" id="ctx-explain" checked>
+      </label>
+      <label class="toggle-label">
+        <span>Remember this</span>
+        <input type="checkbox" id="ctx-remember" checked>
+      </label>
+      <label class="toggle-label">
+        <span>Summarise this page</span>
+        <input type="checkbox" id="ctx-summarise" checked>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="btn-save" class="btn primary">Save Settings</button>
+      <span id="save-status"></span>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
