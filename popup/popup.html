@@ -14,22 +14,44 @@
         <div class="title">Lenni</div>
         <div class="subtitle">AI Execution Agent</div>
       </div>
-      <span id="status" class="status disconnected">Offline</span>
     </div>
 
+    <!-- Status -->
+    <div class="status-row">
+      <div class="status-item">
+        <span id="dot-lenni" class="dot off"></span>
+        <span>Lenni</span>
+        <span id="status-lenni" class="status-label">Offline</span>
+      </div>
+      <div class="status-item">
+        <span id="dot-cdp" class="dot off"></span>
+        <span>Browser Control</span>
+        <span id="status-cdp" class="status-label">Off</span>
+      </div>
+    </div>
+
+    <!-- Actions -->
     <div class="actions">
       <button id="btn-summarise" class="action-btn">
-        <span class="action-icon">📄</span>
-        <span>Summarise this page</span>
+        <span class="action-icon">📄</span>Summarise this page
       </button>
       <button id="btn-facts" class="action-btn">
-        <span class="action-icon">🔍</span>
-        <span>Find key facts</span>
+        <span class="action-icon">🔍</span>Find key facts
+      </button>
+      <button id="btn-screenshot" class="action-btn">
+        <span class="action-icon">📸</span>Screenshot for Lenni
       </button>
       <button id="btn-chat" class="action-btn primary">
-        <span class="action-icon">💬</span>
-        <span>Ask Lenni...</span>
+        <span class="action-icon">💬</span>Ask Lenni...
       </button>
+    </div>
+
+    <!-- Browser control -->
+    <div id="cdp-section" class="cdp-section hidden">
+      <button id="btn-enable-cdp" class="action-btn cdp">
+        <span class="action-icon">🌐</span>Enable Browser Control
+      </button>
+      <p class="cdp-hint">Lets Lenni navigate and interact with your browser.</p>
     </div>
 
     <div class="footer">

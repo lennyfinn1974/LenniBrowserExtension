@@ -1,89 +1,96 @@
 /**
- * Lenni Popup — Quick actions from the toolbar icon.
+ * Lenni Popup — Quick actions + connection status + CDP bridge.
  */
 
-const statusEl = document.getElementById("status");
+const dotLenni = document.getElementById("dot-lenni");
+const dotCdp = document.getElementById("dot-cdp");
+const statusLenni = document.getElementById("status-lenni");
+const statusCdp = document.getElementById("status-cdp");
+const cdpSection = document.getElementById("cdp-section");
 
-// Check connection
-chrome.runtime.sendMessage(
-  { target: "background", type: "get_status" },
-  (response) => {
-    if (response && response.connected) {
-      statusEl.textContent = "Online";
-      statusEl.className = "status connected";
-    } else {
-      statusEl.textContent = "Offline";
-      statusEl.className = "status disconnected";
-    }
+// Check status
+chrome.runtime.sendMessage({ target: "background", type: "get_status" }, (r) => {
+  if (r) {
+    dotLenni.className = `dot ${r.connected ? "on" : "off"}`;
+    statusLenni.textContent = r.connected ? "Connected" : "Offline";
+
+    dotCdp.className = `dot ${r.cdpConnected ? "on" : "off"}`;
+    statusCdp.textContent = r.cdpConnected ? "Active" : "Off";
+
+    // Show enable button if Lenni connected but CDP not
+    cdpSection.classList.toggle("hidden", r.cdpConnected || !r.connected);
   }
-);
+});
 
-// Summarise page
+// Quick actions
 document.getElementById("btn-summarise").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
-    // Open sidebar
-    if (chrome.sidePanel) {
-      await chrome.sidePanel.open({ tabId: tab.id });
-    }
-    // Send summarise via context menu handler
+    if (chrome.sidePanel) await chrome.sidePanel.open({ tabId: tab.id });
     chrome.tabs.sendMessage(tab.id, { action: "getPageContent" }, (response) => {
-      if (response && response.content) {
+      if (response?.content) {
         chrome.runtime.sendMessage({
-          target: "background",
-          type: "send_message",
+          target: "background", type: "send_message",
           text: `Summarise this page: ${tab.title}\n\n${response.content.slice(0, 3000)}`,
-          url: tab.url,
-          title: tab.title,
+          url: tab.url, title: tab.title,
         });
-        chrome.runtime.sendMessage({
-          target: "sidebar",
-          type: "user_message",
-          text: `Summarise: ${tab.title}`,
-        });
+        chrome.runtime.sendMessage({ target: "sidebar", type: "user_message", text: `Summarise: ${tab.title}` });
       }
     });
   }
   window.close();
 });
 
-// Find key facts
 document.getElementById("btn-facts").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
-    if (chrome.sidePanel) {
-      await chrome.sidePanel.open({ tabId: tab.id });
-    }
+    if (chrome.sidePanel) await chrome.sidePanel.open({ tabId: tab.id });
     chrome.tabs.sendMessage(tab.id, { action: "getPageContent" }, (response) => {
-      if (response && response.content) {
+      if (response?.content) {
         chrome.runtime.sendMessage({
-          target: "background",
-          type: "send_message",
-          text: `Find the key facts and important numbers on this page: ${tab.title}\n\n${response.content.slice(0, 3000)}`,
-          url: tab.url,
-          title: tab.title,
+          target: "background", type: "send_message",
+          text: `Find key facts and important numbers: ${tab.title}\n\n${response.content.slice(0, 3000)}`,
+          url: tab.url, title: tab.title,
         });
-        chrome.runtime.sendMessage({
-          target: "sidebar",
-          type: "user_message",
-          text: `Key facts: ${tab.title}`,
-        });
+        chrome.runtime.sendMessage({ target: "sidebar", type: "user_message", text: `Key facts: ${tab.title}` });
       }
     });
   }
   window.close();
 });
 
-// Open sidebar for chat
-document.getElementById("btn-chat").addEventListener("click", async () => {
+document.getElementById("btn-screenshot").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id && chrome.sidePanel) {
-    await chrome.sidePanel.open({ tabId: tab.id });
+  if (tab?.id) {
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
+      chrome.runtime.sendMessage({
+        target: "background", type: "send_message",
+        text: `Screenshot of: ${tab.title}`, screenshot: dataUrl,
+        url: tab.url, title: tab.title,
+      });
+      chrome.tabs.sendMessage(tab.id, { action: "showToast", text: "Screenshot sent to Lenni" });
+    } catch (e) {}
   }
   window.close();
 });
 
-// Options
+document.getElementById("btn-chat").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id && chrome.sidePanel) await chrome.sidePanel.open({ tabId: tab.id });
+  window.close();
+});
+
+// Enable browser control
+document.getElementById("btn-enable-cdp").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ target: "background", type: "enable_browser_control" });
+  statusCdp.textContent = "Connecting...";
+  setTimeout(() => {
+    chrome.runtime.sendMessage({ target: "background", type: "check_cdp" });
+    window.close();
+  }, 3000);
+});
+
 document.getElementById("btn-options").addEventListener("click", (e) => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();

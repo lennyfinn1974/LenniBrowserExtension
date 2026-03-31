@@ -1,8 +1,10 @@
 /**
  * Lenni Browser Extension — Background Service Worker
  *
- * Manages WebSocket connection to Lenni backend, context menus,
- * and message routing between content scripts and sidebar.
+ * Three roles:
+ *   1. WebSocket to Lenni backend (chat, remember, status)
+ *   2. Context menu actions (ask, explain, remember, summarise, screenshot)
+ *   3. Chrome DevTools Protocol bridge (facilitate chrome-devtools-mcp)
  */
 
 const DEFAULT_LENNI_URL = "http://localhost:8200";
@@ -11,6 +13,10 @@ let wsReconnectTimer = null;
 let lenniUrl = DEFAULT_LENNI_URL;
 let authToken = "";
 let conversationId = null;
+let cdpConnected = false;
+
+// Sites the user has pre-approved for all actions
+const allowedSites = new Set();
 
 // ── Config ───────────────────────────────────────────────────────
 
@@ -35,41 +41,40 @@ function connectWebSocket() {
   try {
     ws = new WebSocket(wsUrl);
   } catch (e) {
-    console.warn("Lenni WS connect failed:", e);
     scheduleReconnect();
     return;
   }
 
   ws.onopen = () => {
-    console.log("Lenni WS connected");
     clearReconnectTimer();
-    // Authenticate
-    if (authToken) {
-      ws.send(JSON.stringify({ type: "auth", token: authToken }));
-    }
-    broadcastStatus(true);
+    if (authToken) ws.send(JSON.stringify({ type: "auth", token: authToken }));
+    broadcastStatus();
   };
 
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
+
+      // Handle browser control messages from Lenni
+      if (data.type === "browser_action_request") {
+        handleBrowserActionRequest(data);
+        return;
+      }
+
       // Forward to sidebar
       chrome.runtime.sendMessage({ target: "sidebar", ...data }).catch(() => {});
-    } catch (e) {
-      console.warn("Lenni WS parse error:", e);
-    }
+    } catch (e) {}
   };
 
   ws.onclose = () => {
-    console.log("Lenni WS closed");
     ws = null;
-    broadcastStatus(false);
+    broadcastStatus();
     scheduleReconnect();
   };
 
   ws.onerror = () => {
     ws = null;
-    broadcastStatus(false);
+    broadcastStatus();
     scheduleReconnect();
   };
 }
@@ -80,17 +85,15 @@ function scheduleReconnect() {
 }
 
 function clearReconnectTimer() {
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
 }
 
-function broadcastStatus(connected) {
+function broadcastStatus() {
   chrome.runtime.sendMessage({
     target: "sidebar",
     type: "connection_status",
-    connected,
+    connected: ws && ws.readyState === WebSocket.OPEN,
+    cdpConnected,
   }).catch(() => {});
 }
 
@@ -98,7 +101,6 @@ function sendToLenni(message) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message));
   } else {
-    // Fallback to HTTP
     sendViaHTTP(message);
   }
 }
@@ -115,15 +117,11 @@ async function sendViaHTTP(message) {
         content: message.text || message.content || "",
         conversation_id: conversationId,
         channel: "extension",
-        metadata: {
-          url: message.url,
-          page_title: message.title,
-        },
+        metadata: { url: message.url, page_title: message.title },
       }),
     });
 
     if (response.ok) {
-      // SSE stream — read and forward to sidebar
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -132,7 +130,6 @@ async function sendViaHTTP(message) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
@@ -141,39 +138,103 @@ async function sendViaHTTP(message) {
             const payload = line.slice(6).trim();
             if (payload === "[DONE]") continue;
             try {
-              // sse-starlette nested format
-              if (payload.startsWith("event:")) {
-                // Parse: "event: X\r\ndata: data: Y"
-                continue;
-              }
               if (payload.startsWith("data: ")) {
-                const inner = payload.slice(6);
-                const parsed = JSON.parse(inner);
+                const parsed = JSON.parse(payload.slice(6));
                 chrome.runtime.sendMessage({ target: "sidebar", ...parsed }).catch(() => {});
               } else {
                 const parsed = JSON.parse(payload);
                 chrome.runtime.sendMessage({ target: "sidebar", ...parsed }).catch(() => {});
               }
             } catch (e) {
-              // Not JSON — token text
-              chrome.runtime.sendMessage({
-                target: "sidebar",
-                type: "token",
-                data: payload,
-              }).catch(() => {});
+              chrome.runtime.sendMessage({ target: "sidebar", type: "token", data: payload }).catch(() => {});
             }
           }
         }
       }
     }
   } catch (e) {
-    console.warn("Lenni HTTP fallback failed:", e);
     chrome.runtime.sendMessage({
-      target: "sidebar",
-      type: "error",
+      target: "sidebar", type: "error",
       data: "Cannot connect to Lenni. Is the backend running?",
     }).catch(() => {});
   }
+}
+
+// ── Browser Control Bridge (CDP) ─────────────────────────────────
+
+async function handleBrowserActionRequest(data) {
+  const { action_id, action, description, selector, url, tier } = data;
+
+  // Auto-approved actions (read-only)
+  if (tier === "auto_approved") {
+    respondToAction(action_id, true);
+    return;
+  }
+
+  // Check if site is pre-approved
+  try {
+    const siteHost = new URL(url || "").hostname;
+    if (allowedSites.has(siteHost)) {
+      respondToAction(action_id, true);
+      return;
+    }
+  } catch (e) {}
+
+  // Show highlight + confirmation overlay on the active tab
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    respondToAction(action_id, false);
+    return;
+  }
+
+  // Highlight the target element
+  if (selector) {
+    chrome.tabs.sendMessage(tab.id, {
+      action: "highlightElement", selector, tier,
+    }).catch(() => {});
+  }
+
+  // Show confirmation overlay
+  chrome.tabs.sendMessage(tab.id, {
+    action: "showConfirmation",
+    actionId: action_id,
+    description: description || `${action} on page`,
+    target: selector,
+    url,
+    tier,
+  }).catch(() => {});
+}
+
+function respondToAction(actionId, approved) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "action_confirmation",
+      action_id: actionId,
+      approved,
+    }));
+  }
+}
+
+async function checkCDPStatus() {
+  try {
+    const resp = await fetch(`${lenniUrl}/settings/system`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      cdpConnected = data?.services?.browser_live?.status === "connected";
+      broadcastStatus();
+    }
+  } catch (e) {
+    cdpConnected = false;
+  }
+}
+
+async function enableBrowserControl() {
+  // Signal Lenni to connect chrome-devtools-mcp
+  sendToLenni({ type: "browser_control_status", connected: true });
+  // Check status after a delay
+  setTimeout(checkCDPStatus, 5000);
 }
 
 // ── Context Menus ────────────────────────────────────────────────
@@ -181,87 +242,44 @@ async function sendViaHTTP(message) {
 chrome.runtime.onInstalled.addListener(async () => {
   await loadConfig();
 
-  chrome.contextMenus.create({
-    id: "ask-lenni",
-    title: "Ask Lenni about this",
-    contexts: ["selection"],
-  });
-
-  chrome.contextMenus.create({
-    id: "explain-lenni",
-    title: "Explain this",
-    contexts: ["selection"],
-  });
-
-  chrome.contextMenus.create({
-    id: "remember-lenni",
-    title: "Remember this",
-    contexts: ["selection"],
-  });
-
-  chrome.contextMenus.create({
-    id: "summarise-page",
-    title: "Summarise this page",
-    contexts: ["page"],
-  });
+  chrome.contextMenus.create({ id: "ask-lenni", title: "Ask Lenni about this", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "explain-lenni", title: "Explain this", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "remember-lenni", title: "Remember this", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: "separator-1", type: "separator", contexts: ["page", "selection"] });
+  chrome.contextMenus.create({ id: "summarise-page", title: "Summarise this page", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "screenshot-page", title: "Screenshot for Lenni", contexts: ["page"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  // Open sidebar
-  if (chrome.sidePanel) {
-    await chrome.sidePanel.open({ tabId: tab.id });
-  }
+  if (chrome.sidePanel) await chrome.sidePanel.open({ tabId: tab.id });
 
-  const baseMsg = {
-    url: tab.url,
-    title: tab.title,
-  };
+  const baseMsg = { url: tab.url, title: tab.title };
 
   switch (info.menuItemId) {
     case "ask-lenni":
-      sendToLenni({
-        type: "chat",
-        text: `Analyse this: "${info.selectionText}"`,
-        ...baseMsg,
-      });
+      sendToLenni({ type: "chat", text: `Analyse this: "${info.selectionText}"`, ...baseMsg });
       chrome.runtime.sendMessage({
-        target: "sidebar",
-        type: "user_message",
-        text: `Analyse this: "${info.selectionText?.slice(0, 200)}"`,
+        target: "sidebar", type: "user_message",
+        text: `Analyse: "${info.selectionText?.slice(0, 200)}"`,
       }).catch(() => {});
       break;
 
     case "explain-lenni":
-      sendToLenni({
-        type: "chat",
-        text: `Explain this in simple terms: "${info.selectionText}"`,
-        ...baseMsg,
-      });
+      sendToLenni({ type: "chat", text: `Explain this in simple terms: "${info.selectionText}"`, ...baseMsg });
       chrome.runtime.sendMessage({
-        target: "sidebar",
-        type: "user_message",
+        target: "sidebar", type: "user_message",
         text: `Explain: "${info.selectionText?.slice(0, 200)}"`,
       }).catch(() => {});
       break;
 
     case "remember-lenni":
-      sendToLenni({
-        type: "remember",
-        text: info.selectionText,
-        ...baseMsg,
-      });
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/icon48.png",
-        title: "Lenni",
-        message: "Saved to memory.",
-      });
+      sendToLenni({ type: "remember", text: info.selectionText, ...baseMsg });
+      chrome.tabs.sendMessage(tab.id, { action: "showToast", text: "Saved to Lenni memory" }).catch(() => {});
       break;
 
     case "summarise-page":
-      // Request page content from content script
       chrome.tabs.sendMessage(tab.id, { action: "getPageContent" }, (response) => {
-        if (response && response.content) {
+        if (response?.content) {
           sendToLenni({
             type: "chat",
             text: "Summarise this page",
@@ -269,35 +287,41 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             ...baseMsg,
           });
           chrome.runtime.sendMessage({
-            target: "sidebar",
-            type: "user_message",
+            target: "sidebar", type: "user_message",
             text: `Summarise: ${tab.title}`,
           }).catch(() => {});
         }
       });
       break;
+
+    case "screenshot-page":
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
+        sendToLenni({
+          type: "chat",
+          text: `I'm sharing a screenshot of my current page: ${tab.title}`,
+          screenshot: dataUrl,
+          ...baseMsg,
+        });
+        chrome.tabs.sendMessage(tab.id, { action: "showToast", text: "Screenshot sent to Lenni" }).catch(() => {});
+      } catch (e) {
+        chrome.tabs.sendMessage(tab.id, { action: "showToast", text: "Screenshot failed" }).catch(() => {});
+      }
+      break;
   }
 });
 
-// ── Message handling from sidebar/popup ──────────────────────────
+// ── Message handling from sidebar/popup/content ──────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === "background") {
     switch (message.type) {
       case "send_message":
-        sendToLenni({
-          type: "chat",
-          text: message.text,
-          url: message.url,
-          title: message.title,
-        });
+        sendToLenni({ type: "chat", text: message.text, url: message.url, title: message.title });
         break;
 
       case "get_status":
-        sendResponse({
-          connected: ws && ws.readyState === WebSocket.OPEN,
-          url: lenniUrl,
-        });
+        sendResponse({ connected: ws && ws.readyState === WebSocket.OPEN, url: lenniUrl, cdpConnected });
         return true;
 
       case "reconnect":
@@ -305,10 +329,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
       case "config_updated":
-        loadConfig().then(() => {
-          if (ws) ws.close();
-          connectWebSocket();
-        });
+        loadConfig().then(() => { if (ws) ws.close(); connectWebSocket(); });
+        break;
+
+      case "enable_browser_control":
+        enableBrowserControl();
+        break;
+
+      case "check_cdp":
+        checkCDPStatus();
+        break;
+
+      case "action_confirmation":
+        // From content script confirmation overlay
+        respondToAction(message.action_id, message.approved);
+        // If "allow all for this site"
+        if (message.allow_site && message.url) {
+          try { allowedSites.add(new URL(message.url).hostname); } catch (e) {}
+        }
         break;
     }
   }
@@ -318,4 +356,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 loadConfig().then(() => {
   connectWebSocket();
+  checkCDPStatus();
 });
